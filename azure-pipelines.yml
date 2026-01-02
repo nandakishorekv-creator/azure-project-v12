@@ -1,0 +1,229 @@
+# Azure Pipelines YAML for MuleSoft Projects
+# ✅ UPDATED: Uses Azure Secure Files for settings.xml
+
+trigger:
+  branches:
+    include:
+      - '*'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - group: build.variables
+  - name: disable.coverage.autogenerate
+    value: 'true'
+  - name: MAVEN_CACHE_FOLDER
+    value: $(Pipeline.Workspace)/.m2/repository
+  - name: PROJECT_NAME
+    value: $[variables.projectName]
+  - name: MULE_ORG
+    value: $[variables.muleOrg]
+  - name: MULE_ORG_ID
+    value: $[variables.muleOrgId]
+
+stages:
+  - stage: Build
+    displayName: 'Build and Test Stage'
+    jobs:
+      - job: BuildAndTest
+        displayName: 'Build and Test Job'
+        steps:
+          # ✅ STEP 1: Download settings.xml from Azure Secure Files
+          - task: DownloadSecureFile@1
+            name: mavenSettings
+            displayName: 'Download Maven Settings from Secure Files'
+            inputs:
+              secureFile: 'settings.xml'
+          
+          # ✅ STEP 2: Install settings.xml to Maven directory
+          - script: |
+              echo "📦 Installing Maven settings.xml..."
+              mkdir -p ~/.m2
+              cp $(mavenSettings.secureFilePath) ~/.m2/settings.xml
+              
+              echo "✅ settings.xml installed successfully"
+              echo "Location: ~/.m2/settings.xml"
+              
+              # Verify file exists
+              if [ -f ~/.m2/settings.xml ]; then
+                echo "✅ Verified: settings.xml exists"
+              else
+                echo "❌ ERROR: settings.xml not found!"
+                exit 1
+              fi
+              
+              # Show structure (without credentials)
+              echo ""
+              echo "Settings.xml structure:"
+              grep -E '<server>|<id>|</server>' ~/.m2/settings.xml | head -20 || echo "Could not parse"
+            displayName: 'Install Maven Settings'
+
+          # ✅ STEP 3: Setup Java
+          - task: JavaToolInstaller@0
+            displayName: 'Install Java 17'
+            inputs:
+              versionSpec: '17'
+              jdkArchitectureOption: 'x64'
+              jdkSourceOption: 'PreInstalled'
+
+          # ✅ STEP 4: Cache Maven dependencies
+          - task: Cache@2
+            displayName: 'Cache Maven Dependencies'
+            inputs:
+              key: 'maven | "$(Agent.OS)" | **/pom.xml'
+              restoreKeys: |
+                maven | "$(Agent.OS)"
+                maven
+              path: $(MAVEN_CACHE_FOLDER)
+
+          # ✅ STEP 5: Install Anypoint CLI
+          - script: |
+              echo "📦 Installing Anypoint CLI..."
+              npm install -g anypoint-cli@latest
+              anypoint-cli --version
+              echo "✅ Anypoint CLI installed"
+            displayName: 'Install Anypoint CLI'
+
+          # ✅ STEP 6: API Governance Validation
+          - script: |
+              echo "🔍 Running API Governance Validation..."
+              
+              # Create ZIP for validation if needed
+              if [ ! -f "$(PROJECT_NAME).zip" ]; then
+                echo "Creating project ZIP..."
+                zip -r $(PROJECT_NAME).zip . -x "*.git*" -x "target/*"
+              fi
+              
+              # Run validation
+              anypoint-cli \
+                --username='$(anypointUsername)' \
+                --password='$(anypointPassword)' \
+                --organization='$(MULE_ORG)' \
+                governance api validate \
+                --rulesets ruleset.yaml \
+                $(PROJECT_NAME).zip || true
+              
+              echo "✅ API Governance validation completed"
+            displayName: 'API Governance Validation'
+            continueOnError: true
+            condition: and(succeeded(), ne(variables['MULE_ORG'], ''))
+
+          # ✅ STEP 7: Maven Validate
+          - task: Maven@4
+            displayName: 'Maven Validate'
+            inputs:
+              mavenPomFile: 'pom.xml'
+              mavenOptions: '-Xmx3072m'
+              javaHomeOption: 'JDKVersion'
+              jdkVersionOption: '17'
+              jdkArchitectureOption: 'x64'
+              goals: 'validate'
+              options: '-Dmaven.repo.local=$(MAVEN_CACHE_FOLDER)'
+            continueOnError: true
+
+          # ✅ STEP 8: MUnit Tests
+          - task: Maven@4
+            displayName: 'MUnit Tests'
+            inputs:
+              mavenPomFile: 'pom.xml'
+              mavenOptions: '-Xmx3072m'
+              javaHomeOption: 'JDKVersion'
+              jdkVersionOption: '17'
+              jdkArchitectureOption: 'x64'
+              goals: 'test'
+              options: |
+                -Dmaven.repo.local=$(MAVEN_CACHE_FOLDER)
+                -Dsecure.key=mule
+                -Dmule.env=dev
+                -Dproject.version=1.0.0
+              sqMavenPluginVersionChoice: 'pom'
+            continueOnError: false
+
+          # ✅ STEP 9: Publish Test Results
+          - task: PublishTestResults@2
+            displayName: 'Publish Test Results'
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/surefire-reports/TEST-*.xml'
+              mergeTestResults: true
+              failTaskOnFailedTests: false
+              testRunTitle: 'MUnit Test Results'
+
+          # ✅ STEP 10: Maven Package
+          - task: Maven@4
+            displayName: 'Maven Package'
+            inputs:
+              mavenPomFile: 'pom.xml'
+              mavenOptions: '-Xmx3072m'
+              javaHomeOption: 'JDKVersion'
+              jdkVersionOption: '17'
+              jdkArchitectureOption: 'x64'
+              goals: 'clean package'
+              options: |
+                -Dmaven.repo.local=$(MAVEN_CACHE_FOLDER)
+                -Dsecure.key=mule
+                -Dmule.env=dev
+                -DskipTests
+              sonarQubeRunAnalysis: true
+              sqMavenPluginVersionChoice: 'pom'
+
+          # ✅ STEP 11: SonarQube Publish (optional)
+          - task: SonarQubePublish@7
+            displayName: 'Publish SonarQube Results'
+            inputs:
+              pollingTimeoutSec: '300'
+            continueOnError: true
+            condition: succeededOrFailed()
+
+          # ✅ STEP 12: Copy Build Artifacts
+          - task: CopyFiles@2
+            displayName: 'Copy Build Artifacts'
+            inputs:
+              Contents: '**/target/*.jar'
+              TargetFolder: $(Build.ArtifactStagingDirectory)
+              CleanTargetFolder: true
+              flattenFolders: true
+
+          # ✅ STEP 13: Publish Pipeline Artifacts
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Pipeline Artifacts'
+            inputs:
+              targetPath: $(System.DefaultWorkingDirectory)
+              artifact: 'drop'
+
+  # ✅ OPTIONAL: Deploy Stage (CloudHub)
+  - stage: Deploy
+    displayName: 'Deploy to CloudHub'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployToCloudHub
+        displayName: 'Deploy to CloudHub Sandbox'
+        environment: 'Sandbox'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                # Re-download settings.xml for deployment
+                - task: DownloadSecureFile@1
+                  name: mavenSettingsDeploy
+                  displayName: 'Download Maven Settings'
+                  inputs:
+                    secureFile: 'settings.xml'
+                
+                - script: |
+                    mkdir -p ~/.m2
+                    cp $(mavenSettingsDeploy.secureFilePath) ~/.m2/settings.xml
+                  displayName: 'Install Maven Settings for Deploy'
+
+                - task: Maven@4
+                  displayName: 'Deploy to CloudHub'
+                  inputs:
+                    mavenPomFile: 'pom.xml'
+                    goals: 'deploy'
+                    options: |
+                      -DskipTests
+                      -Dmule.version=4.9.0
+                      -Dcloudhub.environment=Sandbox
