@@ -194,36 +194,36 @@ stages:
               artifact: 'drop'
 
   # ✅ OPTIONAL: Deploy Stage (CloudHub)
-  - stage: Deploy
-    displayName: 'Deploy to CloudHub'
-    dependsOn: Build
-    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
-    jobs:
-      - deployment: DeployToCloudHub
-        displayName: 'Deploy to CloudHub Sandbox'
-        environment: 'Sandbox'
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                # Re-download settings.xml for deployment
-                - task: DownloadSecureFile@1
-                  name: mavenSettingsDeploy
-                  displayName: 'Download Maven Settings'
-                  inputs:
-                    secureFile: 'settings.xml'
+  # - stage: Deploy
+  #   displayName: 'Deploy to CloudHub'
+  #   dependsOn: Build
+  #   condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  #   jobs:
+  #     - deployment: DeployToCloudHub
+  #       displayName: 'Deploy to CloudHub Sandbox'
+  #       environment: 'Sandbox'
+  #       strategy:
+  #         runOnce:
+  #           deploy:
+  #             steps:
+  #               # Re-download settings.xml for deployment
+  #               - task: DownloadSecureFile@1
+  #                 name: mavenSettingsDeploy
+  #                 displayName: 'Download Maven Settings'
+  #                 inputs:
+  #                   secureFile: 'settings.xml'
                 
-                - script: |
-                    mkdir -p ~/.m2
-                    cp $(mavenSettingsDeploy.secureFilePath) ~/.m2/settings.xml
-                  displayName: 'Install Maven Settings for Deploy'
+  #               - script: |
+  #                   mkdir -p ~/.m2
+  #                   cp $(mavenSettingsDeploy.secureFilePath) ~/.m2/settings.xml
+  #                 displayName: 'Install Maven Settings for Deploy'
 
-                - task: Maven@4
-                  displayName: 'Deploy to CloudHub'
-                  inputs:
-                    mavenPomFile: 'pom.xml'
-                    goals: 'deploy'
-                    options: |
-                      -DskipTests
-                      -Dmule.version=4.9.0
-                      -Dcloudhub.environment=Sandbox
+  #               - task: Maven@4
+  #                 displayName: 'Deploy to CloudHub'
+  #                 inputs:
+  #                   mavenPomFile: 'pom.xml'
+  #                   goals: 'deploy'
+  #                   options: |
+  #                     -DskipTests
+  #                     -Dmule.version=4.9.0
+  #                     -Dcloudhub.environment=Sandbox
